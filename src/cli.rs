@@ -68,6 +68,8 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Remove local enrollment material (config, key, runtime status).
+    Forget,
     /// Generate shell completion scripts to stdout.
     #[command(hide = true)]
     Complete {
@@ -214,5 +216,14 @@ mod tests {
             .expect("update should parse");
         let cli = resolve_cli(DEFAULTS, &matches);
         assert!(matches!(cli.command, Commands::Update { check: true }));
+    }
+
+    #[test]
+    fn forget_command_parses() {
+        let matches = command_with_defaults(DEFAULTS)
+            .try_get_matches_from(["hecate-lampad", "forget"])
+            .expect("forget should parse");
+        let cli = resolve_cli(DEFAULTS, &matches);
+        assert!(matches!(cli.command, Commands::Forget));
     }
 }

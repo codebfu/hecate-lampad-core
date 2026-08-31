@@ -14,6 +14,7 @@ pub mod desktop_update;
 pub mod proxmox_ipc;
 pub mod proxmox_update;
 pub mod enroll;
+pub mod forget;
 pub mod elevation;
 pub mod host;
 pub mod key_material;
@@ -49,6 +50,9 @@ pub use config::AgentConfig;
 pub use enroll::{
     build_enroll_request, load_enrollment_keypair, prepare_agent_enrollment, print_enroll_success,
     read_enrollment_token, submit_enrollment,
+};
+pub use forget::{
+    forget_agent_enrollment, print_forget_report, ForgetEnrollmentOptions, ForgetEnrollmentReport,
 };
 pub use paths::secure_agent_paths;
 pub use policy::AgentPolicy;
