@@ -1,0 +1,3 @@
+# Sudoers fragment for hecate-lampad elevated shell.run (installed by package).
+# Restrict NOPASSWD paths to match elevation_policy.allowed_binaries when possible.
+hecate-lampad ALL=(root) NOPASSWD: ALL
