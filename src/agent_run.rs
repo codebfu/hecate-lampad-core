@@ -28,7 +28,10 @@ use crate::proxmox_ipc::{
     collect_proxmox_tags, helper_package_installed as proxmox_helper_package_installed,
 };
 use crate::policy::AgentPolicy;
-use crate::pull::{HeartbeatThread, PullConfig, PullError, PullLoop};
+use crate::pull::{pull_stale_after, HeartbeatThread, PullConfig, PullError, PullLoop};
+use crate::session_repair::{
+    reload_keypair, should_reset_pull_session, CredentialChange, CredentialWatch,
+};
 use crate::runtime::{write_runtime_status, RuntimeMode, IDLE_POLL_INTERVAL};
 use crate::signing::AgentKeypair;
 use crate::tags::collect_agent_tags;
@@ -104,6 +107,8 @@ pub async fn run_agent_service(options: AgentRunOptions) -> ! {
 
                 run_pull_session(
                     &options.runtime_status_path,
+                    &options.config_path,
+                    &options.key_path,
                     started_at,
                     mode,
                     &config,
@@ -170,6 +175,8 @@ fn assess_readiness(config_path: &Path, key_path: &Path) -> AgentReadiness {
 
 async fn run_pull_session(
     runtime_status_path: &Path,
+    config_path: &Path,
+    key_path: &Path,
     started_at: Instant,
     mut mode: RuntimeMode,
     config: &AgentConfig,
@@ -177,6 +184,7 @@ async fn run_pull_session(
     keypair: AgentKeypair,
 ) {
     let pull_config = PullConfig::from_agent_config(config);
+    let pull_stale_after = pull_stale_after(pull_config.interval);
     let registry = Arc::new(DefaultCommandRegistry::with_builtins());
 
     let client = match HttpPullClient::new(config.server_url.clone()) {
@@ -209,6 +217,10 @@ async fn run_pull_session(
     let mut last_gui_tags: Option<Vec<String>> = None;
     let mut last_proxmox_tags: Option<Vec<String>> = None;
     let mut config = config.clone();
+    let mut credential_watch = CredentialWatch::new(config_path, key_path, &config);
+    let session_started = Instant::now();
+    let mut consecutive_pull_failures: u32 = 0;
+    let mut pull_backoff = pull_config.interval;
 
     if let Some(server_state) =
         sync_agent_state_from_server(&mut config, agent_id, &pull_loop.keypair()).await
@@ -221,6 +233,43 @@ async fn run_pull_session(
     }
 
     loop {
+        if pull_loop.session_state().should_stop() {
+            info!("pull session stopping for self-repair after heartbeat failures");
+            return;
+        }
+
+        match credential_watch.check(config_path, key_path, &mut config) {
+            CredentialChange::ServerIdentityChanged => {
+                info!("server URL or agent id changed on disk; restarting pull session");
+                return;
+            }
+            CredentialChange::KeyUpdated => {
+                if let Some(keypair) = reload_keypair(key_path) {
+                    pull_loop.set_keypair(keypair);
+                    info!("reloaded agent key from disk");
+                } else {
+                    warn!("failed to reload agent key from disk");
+                }
+            }
+            CredentialChange::ConfigUpdated => {
+                mode = runtime_mode_for_agent_state(config.agent_state);
+                info!("reloaded agent config from disk");
+            }
+            CredentialChange::Unchanged => {}
+        }
+
+        if should_reset_pull_session(
+            consecutive_pull_failures,
+            session_started,
+            pull_loop.session_state().as_ref(),
+            pull_stale_after,
+        ) {
+            warn!(
+                pull_failures = consecutive_pull_failures,
+                "resetting pull session after sustained communication failure"
+            );
+            return;
+        }
         if mode == RuntimeMode::PendingApproval {
             if let Some(server_state) =
                 sync_agent_state_from_server(&mut config, agent_id, &pull_loop.keypair()).await
@@ -348,6 +397,9 @@ async fn run_pull_session(
                         pull_loop.session_state().end_command();
                     }
                 }
+                consecutive_pull_failures = 0;
+                pull_backoff = pull_config.interval;
+                pull_loop.session_state().reset_transport_failures();
                 tokio::time::sleep(pull_config.interval).await;
             }
             Err(PullError::Revoked) => {
@@ -355,8 +407,15 @@ async fn run_pull_session(
                 return;
             }
             Err(error) => {
-                warn!(error = %error, "pull failed");
-                tokio::time::sleep(pull_config.interval).await;
+                consecutive_pull_failures += 1;
+                warn!(
+                    error = %error,
+                    pull_failures = consecutive_pull_failures,
+                    backoff_secs = pull_backoff.as_secs(),
+                    "pull failed"
+                );
+                tokio::time::sleep(pull_backoff).await;
+                pull_backoff = (pull_backoff * 2).min(pull_config.backoff_max);
             }
         }
     }

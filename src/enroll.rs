@@ -229,9 +229,8 @@ pub fn print_enroll_success(
     println!();
     if reenroll {
         println!(
-            "Re-enroll updated local credentials. Restart the running agent service so it loads the new key:"
+            "Re-enroll updated local credentials. The running agent service reloads them from disk automatically."
         );
-        println!("  {service_start_hint}");
         println!();
     }
     match response.state {
@@ -246,7 +245,7 @@ pub fn print_enroll_success(
         }
         AgentState::Active => {
             if reenroll {
-                println!("Re-enroll complete. Restart the agent service before expecting pull/sign to succeed.");
+                println!("Re-enroll complete. The running agent service reconnects automatically.");
             } else {
                 println!("Enrollment complete. The running agent service will connect automatically.");
                 println!("If the service is not running yet:");

@@ -27,6 +27,7 @@ pub mod runtime;
 pub mod signing;
 pub mod self_update;
 pub mod service_restart;
+pub mod session_repair;
 pub mod status;
 pub mod tags;
 pub mod task_verify;

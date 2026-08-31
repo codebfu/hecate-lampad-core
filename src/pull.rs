@@ -11,7 +11,7 @@ use crate::AGENT_VERSION;
 use hecate_protocol::agent::HeartbeatRequest;
 use hecate_protocol::task::{AgentTask, PullResponse};
 use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -21,6 +21,9 @@ use uuid::Uuid;
 
 /// Cap on remembered command IDs used to skip duplicate re-execution.
 const RECENT_COMMAND_ID_CAPACITY: usize = 512;
+
+/// Consecutive heartbeat failures before requesting a pull-session reset.
+const MAX_CONSECUTIVE_HEARTBEAT_FAILURES: u32 = 6;
 
 /// LRU-ish set of recently executed command IDs (HashSet + insertion order).
 #[derive(Debug, Default)]
@@ -130,6 +133,7 @@ pub struct AgentSessionState {
     pull_stale_after: Duration,
     /// Recently executed command IDs (dedup against server redelivery).
     recent_command_ids: Mutex<RecentCommandIds>,
+    consecutive_heartbeat_failures: AtomicU32,
 }
 
 impl AgentSessionState {
@@ -169,6 +173,7 @@ impl AgentSessionState {
             recent_command_ids: Mutex::new(RecentCommandIds::with_capacity_hint(
                 RECENT_COMMAND_ID_CAPACITY,
             )),
+            consecutive_heartbeat_failures: AtomicU32::new(0),
         })
     }
 
@@ -195,6 +200,24 @@ impl AgentSessionState {
 
     pub fn should_stop(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
+    }
+
+    pub fn last_pull_ok_at(&self) -> Option<Instant> {
+        *self.last_pull_ok_at.lock().expect("last_pull_ok_at lock")
+    }
+
+    pub fn record_heartbeat_success(&self) {
+        self.consecutive_heartbeat_failures.store(0, Ordering::SeqCst);
+    }
+
+    /// Returns true when the heartbeat thread should stop and reset the pull session.
+    pub fn record_heartbeat_failure(&self) -> bool {
+        let failures = self.consecutive_heartbeat_failures.fetch_add(1, Ordering::SeqCst) + 1;
+        failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES
+    }
+
+    pub fn reset_transport_failures(&self) {
+        self.consecutive_heartbeat_failures.store(0, Ordering::SeqCst);
     }
 
     /// Record a successful pull so heartbeats know the queue loop is alive.
@@ -333,6 +356,16 @@ impl HeartbeatThread {
                             send_heartbeat_once(&client, agent_id, thread_state.as_ref()).await
                         {
                             warn!(error = %error, "heartbeat failed");
+                            if thread_state.record_heartbeat_failure() {
+                                warn!(
+                                    failures = MAX_CONSECUTIVE_HEARTBEAT_FAILURES,
+                                    "too many consecutive heartbeat failures; resetting pull session"
+                                );
+                                thread_state.request_stop();
+                                break;
+                            }
+                        } else {
+                            thread_state.record_heartbeat_success();
                         }
                         // Interruptible sleep so Drop can stop the thread promptly.
                         let mut remaining = interval;
