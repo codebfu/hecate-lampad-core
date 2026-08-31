@@ -5,3 +5,4 @@
 Initial public release.
 
 - Add `forget` command to clear local agent enrollment (config, key, runtime status).
+- Sync local `agent_state` from the server after operator approval (service pull loop and `status` command).

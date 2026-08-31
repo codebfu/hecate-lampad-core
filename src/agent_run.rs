@@ -3,6 +3,7 @@
 
 //! Long-running agent service: idle until enrolled, then pull loop.
 
+use crate::agent_state_sync::{refresh_local_agent_state, runtime_mode_for_agent_state};
 use crate::agent_update::{
     installer_launched_after_update, run_agent_update_command, wait_after_installer_launch,
 };
@@ -157,11 +158,7 @@ fn assess_readiness(config_path: &Path, key_path: &Path) -> AgentReadiness {
         }
     };
 
-    let mode = if config.agent_state == Some(AgentState::PendingApproval) {
-        RuntimeMode::PendingApproval
-    } else {
-        RuntimeMode::Pulling
-    };
+    let mode = runtime_mode_for_agent_state(config.agent_state);
 
     AgentReadiness::Ready {
         config,
@@ -174,7 +171,7 @@ fn assess_readiness(config_path: &Path, key_path: &Path) -> AgentReadiness {
 async fn run_pull_session(
     runtime_status_path: &Path,
     started_at: Instant,
-    mode: RuntimeMode,
+    mut mode: RuntimeMode,
     config: &AgentConfig,
     agent_id: Uuid,
     keypair: AgentKeypair,
@@ -213,7 +210,29 @@ async fn run_pull_session(
     let mut last_proxmox_tags: Option<Vec<String>> = None;
     let mut config = config.clone();
 
+    if let Some(server_state) =
+        sync_agent_state_from_server(&mut config, agent_id, &pull_loop.keypair()).await
+    {
+        mode = apply_synced_agent_state(mode, server_state);
+        if server_state == AgentState::Revoked {
+            error!("agent credential revoked on server; stopping pull loop");
+            return;
+        }
+    }
+
     loop {
+        if mode == RuntimeMode::PendingApproval {
+            if let Some(server_state) =
+                sync_agent_state_from_server(&mut config, agent_id, &pull_loop.keypair()).await
+            {
+                mode = apply_synced_agent_state(mode, server_state);
+                if server_state == AgentState::Revoked {
+                    error!("agent credential revoked on server; stopping pull loop");
+                    return;
+                }
+            }
+        }
+
         if let Err(error) = write_runtime_status(runtime_status_path, mode, started_at, None) {
             warn!(error = %error, "failed to refresh runtime status");
         }
@@ -707,6 +726,32 @@ async fn handle_task(
 
 fn format_runtime_mode(mode: RuntimeMode) -> &'static str {
     crate::runtime::format_runtime_mode(mode)
+}
+
+async fn sync_agent_state_from_server(
+    config: &mut AgentConfig,
+    agent_id: Uuid,
+    keypair: &AgentKeypair,
+) -> Option<AgentState> {
+    match refresh_local_agent_state(config, agent_id, keypair).await {
+        Ok(Some(state)) => Some(state),
+        Ok(None) => None,
+        Err(error) => {
+            warn!(error = %error, "failed to sync agent state from server");
+            None
+        }
+    }
+}
+
+fn apply_synced_agent_state(mode: RuntimeMode, server_state: AgentState) -> RuntimeMode {
+    match server_state {
+        AgentState::Active if mode == RuntimeMode::PendingApproval => {
+            info!("agent approved on server; entering pull mode");
+            RuntimeMode::Pulling
+        }
+        AgentState::PendingApproval => RuntimeMode::PendingApproval,
+        AgentState::Active | AgentState::Revoked => RuntimeMode::Pulling,
+    }
 }
 
 /// Parse agent.update stdout JSON; only restart when the agent binary was replaced.

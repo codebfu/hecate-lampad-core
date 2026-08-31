@@ -3,6 +3,7 @@
 
 //! Agent status collection and reporting.
 
+use crate::agent_state_sync::sync_config_agent_state_from_server;
 use crate::client::{AgentClient, ReachabilityResult};
 use crate::host::local_hostname;
 use crate::config::AgentConfig;
@@ -112,13 +113,28 @@ pub async fn collect_status(
 ) -> AgentStatusReport {
     let hostname = local_hostname();
 
-    let local = inspect_local(&options.config_path, &options.key_path);
+    let mut local = inspect_local(&options.config_path, &options.key_path);
     let mut service = service_probe.probe();
     if service.status == ServiceStatus::Active {
         service.runtime = read_runtime_status(&options.runtime_status_path);
     }
     let service_version = service.runtime.as_ref().map(|runtime| runtime.version.clone());
     let server = inspect_server(&local, &options.key_path).await;
+
+    if local.config == CheckStatus::Ok {
+        if let Some(server_state) = server.state {
+            if local.agent_state != Some(server_state) {
+                match sync_config_agent_state_from_server(&options.config_path, server_state) {
+                    Ok(true) => local.agent_state = Some(server_state),
+                    Ok(false) => {}
+                    Err(error) => tracing::warn!(
+                        error = %error,
+                        "failed to sync cached agent state from server"
+                    ),
+                }
+            }
+        }
+    }
 
     let mut next_steps = Vec::new();
     let exit_code = derive_next_steps(
@@ -364,7 +380,9 @@ fn derive_next_steps(
         next_steps.push(format!("Could not fetch server agent state: {error}"));
     }
 
-    match server.state.or(local.agent_state) {
+    let effective_state = server.state.or(local.agent_state);
+
+    match effective_state {
         Some(AgentState::PendingApproval) => {
             needs_action = true;
             next_steps

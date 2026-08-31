@@ -239,7 +239,9 @@ pub fn print_enroll_success(
             println!("Next: wait for admin approval in the Hecate UI, then verify with:");
             println!("  hecate-lampad status");
             if !reenroll {
-                println!("The running agent service will pick up enrollment automatically.");
+                println!(
+                    "The running agent service syncs approval from the server automatically."
+                );
             }
         }
         AgentState::Active => {

@@ -4,6 +4,7 @@
 //! Shared agent logic for Hecate lampad agents.
 
 pub mod agent_run;
+pub mod agent_state_sync;
 pub mod agent_update;
 pub mod cli;
 pub mod client;
