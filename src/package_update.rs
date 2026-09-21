@@ -301,6 +301,8 @@ pub async fn apply_package_update_blocking(
                 meta.len()
             )));
         }
+        #[cfg(target_os = "linux")]
+        activate_linux_desktop_sessions();
     }
 
     if params.kind == "proxmox_update" {
@@ -521,6 +523,16 @@ fn write_linux_install_script(packages: &[InstallPackage]) -> Result<PathBuf, Up
     // Best-effort start; failsafe also covers this.
     body.push_str("systemctl start hecate-lampad >/dev/null 2>&1 || true\n");
     body.push_str("systemctl restart hecate-lampad-proxmox >/dev/null 2>&1 || true\n");
+    // Desktop postinst activates sessions; re-run after agent is up so /run/hecate-lampad exists.
+    body.push_str(
+        "if [ -x /usr/lib/hecate-lampad-desktop/activate-for-sessions.sh ]; then\n  \
+         echo \"$(date -Is) activating desktop helper sessions\"\n  \
+         if [ \"$(id -u)\" -eq 0 ]; then\n    \
+         /usr/lib/hecate-lampad-desktop/activate-for-sessions.sh || true\n  \
+         else\n    \
+         sudo -n -- /usr/lib/hecate-lampad-desktop/activate-for-sessions.sh || true\n  \
+         fi\nfi\n",
+    );
     for package in packages {
         body.push_str(&format!("rm -f '{}'\n", package.path.display()));
     }
@@ -583,6 +595,54 @@ fn resolve_bin(candidates: &[&str]) -> Option<String> {
         .iter()
         .find(|path| Path::new(path).is_file())
         .map(|path| (*path).to_string())
+}
+
+/// Best-effort session activation after desktop .deb install (`helper.install` /
+/// `agent.update`). The package postinst also runs this; calling again is safe and
+/// covers the case where `/run/hecate-lampad` was not ready during dpkg.
+#[cfg(target_os = "linux")]
+fn activate_linux_desktop_sessions() {
+    const SCRIPT: &str = "/usr/lib/hecate-lampad-desktop/activate-for-sessions.sh";
+    if !Path::new(SCRIPT).is_file() {
+        return;
+    }
+    let argv = if elevation::is_privileged() {
+        vec![SCRIPT.to_string()]
+    } else {
+        match elevation::build_elevated_argv(&[SCRIPT.to_string()]) {
+            Ok(argv) => argv,
+            Err(error) => {
+                warn!(%error, "desktop session activation skipped (elevation unavailable)");
+                return;
+            }
+        }
+    };
+    let program = &argv[0];
+    match Command::new(program)
+        .args(&argv[1..])
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            info!(
+                stdout = %stdout.trim(),
+                stderr = %stderr.trim(),
+                "desktop helper session activation finished"
+            );
+        }
+        Ok(output) => {
+            warn!(
+                status = %output.status,
+                stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+                "desktop helper session activation exited non-zero"
+            );
+        }
+        Err(error) => {
+            warn!(%error, "failed to run desktop helper session activation");
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

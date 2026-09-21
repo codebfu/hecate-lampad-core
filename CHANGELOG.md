@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.4 — 2026-09-21
+
+- After a successful Linux desktop package install, re-run session activation so `/run/hecate-lampad` is ready and live GUI sessions get the helper started.
+
 ## 1.0.3 — 2026-08-31
 
 - Auto-repair pull sessions: reload config/key from disk after enroll or re-enroll without a manual service restart.
