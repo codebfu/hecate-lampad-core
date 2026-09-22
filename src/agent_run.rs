@@ -673,7 +673,41 @@ async fn handle_task(
                             run_desktop_json_command("session.close", params).await
                         }
                         "desktop.app.launch" => {
-                            run_desktop_json_command("app.launch", params).await
+                            let app = params
+                                .get("app")
+                                .and_then(|v| v.as_str())
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .map(str::to_string);
+                            match app {
+                                None => crate::commands::desktop::json_err(
+                                    crate::commands::CommandError::InvalidParams(
+                                        "app required".into(),
+                                    ),
+                                ),
+                                Some(app) => {
+                                    let mut argv = vec![app];
+                                    if let Some(arr) =
+                                        params.get("args").and_then(|v| v.as_array())
+                                    {
+                                        for item in arr {
+                                            if let Some(arg) = item.as_str() {
+                                                argv.push(arg.to_string());
+                                            }
+                                        }
+                                    }
+                                    let cwd = params.get("cwd").and_then(|v| v.as_str());
+                                    if let Err(error) =
+                                        ctx.policy.validate_app_launch(&argv, cwd)
+                                    {
+                                        crate::commands::desktop::json_err(
+                                            crate::commands::CommandError::Policy(error),
+                                        )
+                                    } else {
+                                        run_desktop_json_command("app.launch", params).await
+                                    }
+                                }
+                            }
                         }
                         "desktop.window.list" => {
                             run_desktop_json_command("window.list", params).await

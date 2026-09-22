@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.7 — 2026-09-22
+
+- Re-validate `desktop.app.launch` against the signed task `shell_policy` before forwarding to the desktop helper (defense in depth for the §11 sandbox escape).
+
 ## 1.0.6 — 2026-09-22
 
 - Auto-repair `desktop.sock` / `ipc.token` group to `hecate-ipc` when the helper recreates them without group write access (fixes sticky `gui:none` after helper restart / agent update).

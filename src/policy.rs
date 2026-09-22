@@ -106,6 +106,20 @@ impl AgentPolicy {
         self.validate_env(env)?;
         Ok(())
     }
+
+    /// Re-validate `desktop.app.launch` against the signed task shell policy.
+    /// `cwd` is checked only when the caller provides one.
+    pub fn validate_app_launch(
+        &self,
+        argv: &[String],
+        cwd: Option<&str>,
+    ) -> Result<(), PolicyError> {
+        self.validate_shell_argv(argv)?;
+        if let Some(cwd) = cwd {
+            self.validate_cwd(cwd)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -234,6 +248,20 @@ mod tests {
             .validate_shell_run(&["/usr/bin/uptime".into()], "/tmp", &HashMap::new(), false)
             .unwrap();
         assert!(policy.allows_command("shell.run"));
+    }
+
+    #[test]
+    fn validate_app_launch_enforces_binary_allowlist() {
+        let p = test_policy();
+        p.validate_app_launch(&["/usr/bin/echo".into()], None).unwrap();
+        p.validate_app_launch(&["/usr/bin/echo".into()], Some("/tmp"))
+            .unwrap();
+        assert!(p
+            .validate_app_launch(&["cmd.exe".into()], None)
+            .is_err());
+        assert!(p
+            .validate_app_launch(&["/usr/bin/echo".into()], Some("/etc"))
+            .is_err());
     }
 }
 
