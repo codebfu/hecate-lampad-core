@@ -36,6 +36,7 @@ pub use shell::DesktopShellRunCommand;
 pub use window::{DesktopWindowFocusCommand, DesktopWindowListCommand, DesktopWindowWaitCommand};
 
 pub(crate) fn ipc_client() -> DesktopIpcClient {
+    crate::desktop_ipc::repair_desktop_ipc_permissions();
     DesktopIpcClient::default()
 }
 

@@ -22,7 +22,9 @@ use crate::commands::system_reboot::run_system_reboot_command;
 use crate::commands::{CommandContext, CommandRegistry, DefaultCommandRegistry};
 use crate::config::AgentConfig;
 use crate::desktop_ipc::client::DesktopIpcClient;
-use crate::desktop_ipc::{collect_gui_tags, helper_package_installed};
+use crate::desktop_ipc::{
+    collect_gui_tags, helper_package_installed, repair_desktop_ipc_permissions,
+};
 use crate::proxmox_ipc::client::ProxmoxIpcClient;
 use crate::proxmox_ipc::{
     collect_proxmox_tags, helper_package_installed as proxmox_helper_package_installed,
@@ -309,6 +311,9 @@ async fn run_pull_session(
 
         // Refresh gui/display tags when helper connectivity changes.
         if helper_package_installed() {
+            // Helper may recreate sock/token without hecate-ipc (no sg on modern
+            // Ubuntu). Repair before probing so gui:none does not stick.
+            repair_desktop_ipc_permissions();
             let info = DesktopIpcClient::default().try_info().await;
             let gui_tags = collect_gui_tags(info.as_ref());
             if last_gui_tags.as_ref() != Some(&gui_tags) {

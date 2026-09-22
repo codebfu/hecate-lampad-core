@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.6 — 2026-09-22
+
+- Auto-repair `desktop.sock` / `ipc.token` group to `hecate-ipc` when the helper recreates them without group write access (fixes sticky `gui:none` after helper restart / agent update).
+
 ## 1.0.5 — 2026-09-22
 
 - Distinguish permission-denied vs missing config in agent readiness (clearer status when `/etc/hecate-lampad` ownership is wrong).
