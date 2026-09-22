@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5 — 2026-09-22
+
+- Distinguish permission-denied vs missing config in agent readiness (clearer status when `/etc/hecate-lampad` ownership is wrong).
+
 ## 1.0.4 — 2026-09-21
 
 - After a successful Linux desktop package install, re-run session activation so `/run/hecate-lampad` is ready and live GUI sessions get the helper started.

@@ -122,11 +122,32 @@ pub async fn run_agent_service(options: AgentRunOptions) -> ! {
 }
 
 fn assess_readiness(config_path: &Path, key_path: &Path) -> AgentReadiness {
-    if !config_path.exists() {
-        return AgentReadiness::Waiting {
-            mode: RuntimeMode::WaitingForEnrollment,
-            detail: Some(format!("config not found: {}", config_path.display())),
-        };
+    match std::fs::symlink_metadata(config_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return AgentReadiness::Waiting {
+                mode: RuntimeMode::WaitingForEnrollment,
+                detail: Some(format!("config not found: {}", config_path.display())),
+            };
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            return AgentReadiness::Waiting {
+                mode: RuntimeMode::ConfigInvalid,
+                detail: Some(format!(
+                    "config not readable (check /etc/hecate-lampad ownership, need hecate-lampad:hecate-ipc mode 0750): {}: {error}",
+                    config_path.display()
+                )),
+            };
+        }
+        Err(error) => {
+            return AgentReadiness::Waiting {
+                mode: RuntimeMode::ConfigInvalid,
+                detail: Some(format!(
+                    "cannot access config {}: {error}",
+                    config_path.display()
+                )),
+            };
+        }
     }
 
     let config = match AgentConfig::load(config_path) {

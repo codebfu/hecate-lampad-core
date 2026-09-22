@@ -36,12 +36,13 @@ pub fn secure_agent_paths(config_path: &Path, key_path: &Path) {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn service_owner_spec() -> &'static str {
-    // Linux packages create a matching primary group; macOS sysadminctl users
-    // typically use wheel/staff — match packaging postinstall (`hecate-lampad:wheel`).
+    // Linux packages: useradd --gid hecate-ipc (no private group hecate-lampad).
+    // Must match systemd User=/Group= (hecate-lampad / hecate-ipc).
+    // macOS postinstall uses hecate-lampad:wheel.
     if cfg!(target_os = "macos") {
         "hecate-lampad:wheel"
     } else {
-        "hecate-lampad:hecate-lampad"
+        "hecate-lampad:hecate-ipc"
     }
 }
 
