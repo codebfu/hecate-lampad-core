@@ -382,7 +382,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -508,7 +508,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hecate-lampad-core"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -517,7 +517,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "ed25519-dalek",
- "hecate-lampad-helper-base",
+ "hecate-lampad-helper-base 1.0.1",
  "hecate-protocol",
  "libc",
  "proptest",
@@ -539,6 +539,16 @@ name = "hecate-lampad-helper-base"
 version = "1.0.0"
 source = "git+https://github.com/codebfu/hecate-lampad-helper-base.git?rev=9e401cb7f29ccdab070e5c488aa919dad729f7c2#9e401cb7f29ccdab070e5c488aa919dad729f7c2"
 dependencies = [
+ "libc",
+ "thiserror",
+ "windows",
+]
+
+[[package]]
+name = "hecate-lampad-helper-base"
+version = "1.0.1"
+source = "git+https://github.com/codebfu/hecate-lampad-helper-base.git?rev=67dc114a82eb10f517f4728ebaa3861fc2d13c73#67dc114a82eb10f517f4728ebaa3861fc2d13c73"
+dependencies = [
  "hex",
  "libc",
  "rand 0.8.8",
@@ -557,7 +567,7 @@ version = "1.0.0"
 source = "git+https://github.com/codebfu/hecate.git?rev=14d626dca14b08e6e65be5c6139f63beafdd9f33#14d626dca14b08e6e65be5c6139f63beafdd9f33"
 dependencies = [
  "chrono",
- "hecate-lampad-helper-base",
+ "hecate-lampad-helper-base 1.0.0",
  "serde",
  "serde_json",
  "sha2",
@@ -1070,7 +1080,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1280,7 +1290,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1553,10 +1563,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

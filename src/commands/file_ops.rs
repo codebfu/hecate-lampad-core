@@ -206,8 +206,10 @@ fn parse_mode_octal(mode: &str) -> Result<u32, CommandError> {
             "mode must be a 4-digit octal string".into(),
         ));
     }
-    u32::from_str_radix(mode, 8)
-        .map_err(|_| CommandError::InvalidParams("invalid mode".into()))
+    let parsed = u32::from_str_radix(mode, 8)
+        .map_err(|_| CommandError::InvalidParams("invalid mode".into()))?;
+    // Strip setuid/setgid/sticky bits — AI-pushed files must not gain special bits.
+    Ok(parsed & 0o777)
 }
 
 pub fn reject_path_traversal(path: &str) -> Result<(), CommandError> {
@@ -573,5 +575,13 @@ mod tests {
         let target = dir.path().join("output.txt");
         atomic_write_file(&target, b"hello", 0o644).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn parse_mode_octal_masks_setuid_setgid_sticky() {
+        assert_eq!(parse_mode_octal("4755").unwrap(), 0o755);
+        assert_eq!(parse_mode_octal("2755").unwrap(), 0o755);
+        assert_eq!(parse_mode_octal("1755").unwrap(), 0o755);
+        assert_eq!(parse_mode_octal("0644").unwrap(), 0o644);
     }
 }
