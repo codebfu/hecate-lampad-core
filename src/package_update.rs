@@ -1,7 +1,7 @@
 //! Copyright (C) 2026 Gaultier HUBERT
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Installer-package self-update for Linux (.deb), Windows (.msi), and macOS (.pkg).
+//! Installer-package self-update for Linux (.deb/.rpm), Windows (.msi), and macOS (.pkg).
 //!
 //! The agent downloads and verifies packages, launches the package manager in a
 //! detached process, then lets the installer stop/restart the service. A
@@ -110,11 +110,13 @@ pub fn require_package_install_elevation() -> Result<(), UpdaterError> {
 fn package_install_elevation_hint() -> String {
     #[cfg(target_os = "linux")]
     {
-        return "package install requires root privileges but non-interactive elevation is unavailable; \
-                reinstall the hecate-lampad deb package (or run install-elevation-policy.sh as root) \
-                so /etc/sudoers.d/hecate-lampad is present, and ensure the systemd unit sets \
-                ProtectSystem=no without ReadWritePaths= (that pair fails with exit 226/NAMESPACE)"
-            .into();
+        let pkg = preferred_linux_installer();
+        return format!(
+            "package install requires root privileges but non-interactive elevation is unavailable; \
+             reinstall the hecate-lampad {pkg} package (or run install-elevation-policy.sh as root) \
+             so /etc/sudoers.d/hecate-lampad is present, and ensure the systemd unit sets \
+             ProtectSystem=no without ReadWritePaths= (that pair fails with exit 226/NAMESPACE)"
+        );
     }
     #[cfg(target_os = "macos")]
     {
@@ -378,10 +380,86 @@ fn package_extension() -> &'static str {
     {
         ".pkg"
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        match preferred_linux_installer() {
+            "rpm" => ".rpm",
+            _ => ".deb",
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         ".deb"
     }
+}
+
+/// Preferred Linux installer type for update offers (`deb` or `rpm`).
+pub fn preferred_linux_installer() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        detect_linux_installer()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "deb"
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn detect_linux_installer() -> &'static str {
+    if let Some(kind) = installer_from_os_release("/etc/os-release") {
+        return kind;
+    }
+    let has_dpkg = resolve_bin(&["/usr/bin/dpkg", "/bin/dpkg"]).is_some();
+    let has_rpm = resolve_bin(&["/usr/bin/rpm", "/bin/rpm"]).is_some();
+    match (has_dpkg, has_rpm) {
+        (false, true) => "rpm",
+        (true, false) => "deb",
+        // Both or neither: prefer deb (historical default).
+        _ => "deb",
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn installer_from_os_release(path: &str) -> Option<&'static str> {
+    let content = std::fs::read_to_string(path).ok()?;
+    installer_from_os_release_content(&content)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn installer_from_os_release_content(content: &str) -> Option<&'static str> {
+    let mut id = None;
+    let mut id_like = None;
+    for line in content.lines() {
+        if let Some(value) = line.strip_prefix("ID=") {
+            id = Some(value.trim().trim_matches('"').to_ascii_lowercase());
+        } else if let Some(value) = line.strip_prefix("ID_LIKE=") {
+            id_like = Some(value.trim().trim_matches('"').to_ascii_lowercase());
+        }
+    }
+    let tokens: Vec<&str> = id
+        .iter()
+        .map(String::as_str)
+        .chain(
+            id_like
+                .iter()
+                .flat_map(|value| value.split_whitespace()),
+        )
+        .collect();
+    const RPM: &[&str] = &[
+        "fedora", "rhel", "centos", "rocky", "almalinux", "alma", "ol", "oracle", "amzn",
+        "amazon", "sles", "opensuse", "suse",
+    ];
+    const DEB: &[&str] = &[
+        "debian", "ubuntu", "raspbian", "linuxmint", "pop", "elementary", "kali", "devuan",
+    ];
+    if tokens.iter().any(|token| RPM.contains(token)) {
+        return Some("rpm");
+    }
+    if tokens.iter().any(|token| DEB.contains(token)) {
+        return Some("deb");
+    }
+    None
 }
 
 fn cleanup_staged(staged: &[InstallPackage]) {
@@ -421,7 +499,7 @@ fn spawn_detached_installer(packages: &[InstallPackage]) -> Result<(), UpdaterEr
 fn run_installer_blocking(packages: &[InstallPackage]) -> Result<(), UpdaterError> {
     #[cfg(target_os = "linux")]
     {
-        run_linux_dpkg(packages)
+        run_linux_packages(packages)
     }
     #[cfg(target_os = "windows")]
     {
@@ -494,7 +572,7 @@ fn write_linux_install_script(packages: &[InstallPackage]) -> Result<PathBuf, Up
         log_path.display()
     ));
     body.push_str("echo \"$(date -Is) hecate-lampad package install starting\"\n");
-    // Let the agent submit the command result before dpkg stops the service.
+    // Let the agent submit the command result before the package manager stops the service.
     body.push_str("sleep 3\n");
     if elevation::is_privileged() {
         body.push_str("echo \"$(date -Is) running package install as root\"\n");
@@ -508,15 +586,16 @@ fn write_linux_install_script(packages: &[InstallPackage]) -> Result<PathBuf, Up
     for package in packages {
         let path = package.path.display().to_string();
         let expected = package.expected_sha256.to_lowercase();
-        // Re-hash immediately before dpkg to close the staging TOCTOU window.
+        // Re-hash immediately before install to close the staging TOCTOU window.
         body.push_str(&format!(
             "echo '{expected}  {path}' | sha256sum -c -\n"
         ));
-        // Prefer non-interactive sudo (service user); fall back to plain dpkg as root.
+        let install_cmd = linux_install_command_for_path(&package.path);
+        // Prefer non-interactive sudo (service user); fall back to plain install as root.
         if elevation::is_privileged() {
-            body.push_str(&format!("dpkg -i '{path}'\n"));
+            body.push_str(&format!("{install_cmd}\n"));
         } else {
-            body.push_str(&format!("sudo -n -- dpkg -i '{path}'\n"));
+            body.push_str(&format!("sudo -n -- {install_cmd}\n"));
         }
     }
     body.push_str("echo \"$(date -Is) hecate-lampad package install finished\"\n");
@@ -543,9 +622,31 @@ fn write_linux_install_script(packages: &[InstallPackage]) -> Result<PathBuf, Up
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux_dpkg(packages: &[InstallPackage]) -> Result<(), UpdaterError> {
-    let dpkg = resolve_bin(&["/usr/bin/dpkg", "/bin/dpkg"])
-        .ok_or_else(|| UpdaterError::Aborted("dpkg not found".into()))?;
+fn linux_install_command_for_path(path: &Path) -> String {
+    let path_str = path.display().to_string();
+    if path_str.to_ascii_lowercase().ends_with(".rpm") {
+        format!("rpm -Uvh '{path_str}'")
+    } else {
+        format!("dpkg -i '{path_str}'")
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_install_argv(path: &Path) -> Result<Vec<String>, UpdaterError> {
+    let path_owned = path.to_string_lossy().into_owned();
+    if path_owned.to_ascii_lowercase().ends_with(".rpm") {
+        let rpm = resolve_bin(&["/usr/bin/rpm", "/bin/rpm"])
+            .ok_or_else(|| UpdaterError::Aborted("rpm not found".into()))?;
+        Ok(vec![rpm, "-Uvh".into(), path_owned])
+    } else {
+        let dpkg = resolve_bin(&["/usr/bin/dpkg", "/bin/dpkg"])
+            .ok_or_else(|| UpdaterError::Aborted("dpkg not found".into()))?;
+        Ok(vec![dpkg, "-i".into(), path_owned])
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux_packages(packages: &[InstallPackage]) -> Result<(), UpdaterError> {
     for package in packages {
         let actual = Updater::sha256_nofollow(&package.path)?;
         if actual != package.expected_sha256.to_lowercase() {
@@ -554,19 +655,11 @@ fn run_linux_dpkg(packages: &[InstallPackage]) -> Result<(), UpdaterError> {
                 actual,
             });
         }
+        let base_argv = linux_install_argv(&package.path)?;
         let argv = if elevation::is_privileged() {
-            vec![
-                dpkg.clone(),
-                "-i".into(),
-                package.path.to_string_lossy().into_owned(),
-            ]
+            base_argv
         } else {
-            elevation::build_elevated_argv(&[
-                dpkg.clone(),
-                "-i".into(),
-                package.path.to_string_lossy().into_owned(),
-            ])
-            .map_err(UpdaterError::Aborted)?
+            elevation::build_elevated_argv(&base_argv).map_err(UpdaterError::Aborted)?
         };
 
         let program = &argv[0];
@@ -597,9 +690,9 @@ fn resolve_bin(candidates: &[&str]) -> Option<String> {
         .map(|path| (*path).to_string())
 }
 
-/// Best-effort session activation after desktop .deb install (`helper.install` /
-/// `agent.update`). The package postinst also runs this; calling again is safe and
-/// covers the case where `/run/hecate-lampad` was not ready during dpkg.
+/// Best-effort session activation after desktop package install (`helper.install` /
+/// `agent.update`). The package postinst/%post also runs this; calling again is safe and
+/// covers the case where `/run/hecate-lampad` was not ready during install.
 #[cfg(target_os = "linux")]
 fn activate_linux_desktop_sessions() {
     const SCRIPT: &str = "/usr/lib/hecate-lampad-desktop/activate-for-sessions.sh";
@@ -1275,7 +1368,24 @@ mod tests {
     #[test]
     fn package_extension_matches_platform() {
         let ext = package_extension();
-        assert!(ext == ".deb" || ext == ".msi" || ext == ".pkg");
+        assert!(ext == ".deb" || ext == ".rpm" || ext == ".msi" || ext == ".pkg");
+    }
+
+    #[test]
+    fn installer_from_os_release_detects_rpm_and_deb() {
+        assert_eq!(
+            installer_from_os_release_content("ID=fedora\n"),
+            Some("rpm")
+        );
+        assert_eq!(
+            installer_from_os_release_content("ID=rhel\nID_LIKE=\"fedora\"\n"),
+            Some("rpm")
+        );
+        assert_eq!(
+            installer_from_os_release_content("ID=ubuntu\nID_LIKE=debian\n"),
+            Some("deb")
+        );
+        assert_eq!(installer_from_os_release_content("ID=weirdos\n"), None);
     }
 
     #[test]
