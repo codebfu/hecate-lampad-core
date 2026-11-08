@@ -11,9 +11,9 @@ build = "build.rs"
 [dependencies]
 hecate-protocol = { git = "https://github.com/codebfu/hecate.git", rev = "14d626dca14b08e6e65be5c6139f63beafdd9f33", package = "hecate-protocol" }
 hecate-lampad-helper-base = { git = "https://github.com/codebfu/hecate-lampad-helper-base.git", rev = "67dc114a82eb10f517f4728ebaa3861fc2d13c73" }
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-sha2 = "0.10"
-base64 = "0.22"
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+sha2 = "0.11"
+base64 = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
@@ -23,8 +23,8 @@ anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tracing = "0.1"
-toml = "0.8"
-rand = "0.8"
+toml = "1.2"
+rand = "0.10"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
