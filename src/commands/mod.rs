@@ -5,6 +5,7 @@ use crate::policy::AgentPolicy;
 use hecate_protocol::command::CommandResultPayload;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
@@ -18,6 +19,7 @@ pub mod file_ops;
 pub mod file_pull;
 pub mod file_push;
 pub mod folder_manipulation;
+pub mod process_kill;
 pub mod remote_download;
 pub mod shell_run;
 pub mod system_info;
@@ -52,16 +54,34 @@ pub struct CommandContext {
     pub agent_id: Uuid,
     pub policy: AgentPolicy,
     pub max_output_bytes: u32,
+    /// Set by the heartbeat thread when the server requests abort of the current command.
+    pub cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl CommandContext {
     pub fn new(agent_id: Uuid, policy: AgentPolicy) -> Self {
+        Self::with_cancel(agent_id, policy, None)
+    }
+
+    pub fn with_cancel(
+        agent_id: Uuid,
+        policy: AgentPolicy,
+        cancel_flag: Option<Arc<AtomicBool>>,
+    ) -> Self {
         let max_output_bytes = policy.max_output_bytes;
         Self {
             agent_id,
             policy,
             max_output_bytes,
+            cancel_flag,
         }
+    }
+
+    /// True when the control plane asked to abort the in-flight command.
+    pub fn is_cancel_requested(&self) -> bool {
+        self.cancel_flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
     }
 }
 

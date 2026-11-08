@@ -97,7 +97,7 @@ pub trait PullClient: Send + Sync {
         &self,
         headers: &SignedRequestHeaders,
         body: &[u8],
-    ) -> Result<(), PullError>;
+    ) -> Result<Option<Uuid>, PullError>;
 }
 
 /// How long after the last successful pull (while idle) before the agent reports unhealthy.
@@ -129,6 +129,10 @@ pub struct AgentSessionState {
     /// True while a command is being executed (pull loop may be blocked by design).
     busy: AtomicBool,
     current_command_id: Mutex<Option<Uuid>>,
+    /// Set when the server asks to abort the current command (via heartbeat).
+    cancel_requested: AtomicBool,
+    /// Shared with command handlers so they can observe cancel without locking session state.
+    cancel_flag: Arc<AtomicBool>,
     /// Max idle time since last pull before reporting unhealthy.
     pull_stale_after: Duration,
     /// Recently executed command IDs (dedup against server redelivery).
@@ -160,6 +164,7 @@ impl AgentSessionState {
                 tags.dedup();
             }
         }
+        let cancel_flag = Arc::new(AtomicBool::new(false));
         Arc::new(Self {
             keypair: Mutex::new(keypair),
             startup_tags: Mutex::new(startup_tags),
@@ -169,6 +174,8 @@ impl AgentSessionState {
             last_pull_ok_at: Mutex::new(None),
             busy: AtomicBool::new(false),
             current_command_id: Mutex::new(None),
+            cancel_requested: AtomicBool::new(false),
+            cancel_flag,
             pull_stale_after,
             recent_command_ids: Mutex::new(RecentCommandIds::with_capacity_hint(
                 RECENT_COMMAND_ID_CAPACITY,
@@ -227,6 +234,8 @@ impl AgentSessionState {
 
     /// Mark the agent as executing work (healthy even if pull is paused).
     pub fn begin_busy(&self, command_id: Option<Uuid>) {
+        self.cancel_requested.store(false, Ordering::SeqCst);
+        self.cancel_flag.store(false, Ordering::SeqCst);
         self.busy.store(true, Ordering::SeqCst);
         *self.current_command_id.lock().expect("current_command_id lock") = command_id;
     }
@@ -234,6 +243,29 @@ impl AgentSessionState {
     /// Mark the agent as executing a command (healthy even if pull is paused).
     pub fn begin_command(&self, command_id: Uuid) {
         self.begin_busy(Some(command_id));
+    }
+
+    /// Shared cancel flag for command handlers (shell.run polls this while waiting).
+    pub fn cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancel_flag)
+    }
+
+    /// Apply a cancel id from a heartbeat response when it matches the in-flight command.
+    pub fn apply_cancel_command_id(&self, cancel_command_id: Option<Uuid>) {
+        let Some(cancel_id) = cancel_command_id else {
+            return;
+        };
+        let current = *self.current_command_id.lock().expect("current_command_id lock");
+        if current == Some(cancel_id) {
+            self.cancel_requested.store(true, Ordering::SeqCst);
+            self.cancel_flag.store(true, Ordering::SeqCst);
+            info!(command_id = %cancel_id, "server requested cancel of in-flight command");
+        }
+    }
+
+    /// True when the current command should abort.
+    pub fn is_cancel_requested(&self) -> bool {
+        self.cancel_requested.load(Ordering::SeqCst)
     }
 
     /// Record `command_id` as seen. Returns `false` if it was already executed recently.
@@ -248,6 +280,8 @@ impl AgentSessionState {
     pub fn end_command(&self) {
         self.busy.store(false, Ordering::SeqCst);
         *self.current_command_id.lock().expect("current_command_id lock") = None;
+        self.cancel_requested.store(false, Ordering::SeqCst);
+        self.cancel_flag.store(false, Ordering::SeqCst);
     }
 
     /// Global health: busy with a command, recent pull, or still within startup grace.
@@ -318,7 +352,9 @@ async fn send_heartbeat_once<C: PullClient>(
         "/api/v1/agent/heartbeat",
         &body_bytes,
     );
-    client.submit_heartbeat(&headers, &body_bytes).await
+    let cancel_command_id = client.submit_heartbeat(&headers, &body_bytes).await?;
+    state.apply_cancel_command_id(cancel_command_id);
+    Ok(())
 }
 
 /// Dedicated OS thread that keeps heartbeats flowing while long commands run.
@@ -553,8 +589,8 @@ mod tests {
             &self,
             _headers: &SignedRequestHeaders,
             _body: &[u8],
-        ) -> Result<(), PullError> {
-            Ok(())
+        ) -> Result<Option<Uuid>, PullError> {
+            Ok(None)
         }
     }
 
@@ -568,9 +604,9 @@ mod tests {
             &self,
             _headers: &SignedRequestHeaders,
             body: &[u8],
-        ) -> Result<(), PullError> {
+        ) -> Result<Option<Uuid>, PullError> {
             self.bodies.lock().unwrap().push(body.to_vec());
-            Ok(())
+            Ok(None)
         }
     }
 
@@ -590,9 +626,9 @@ mod tests {
             &self,
             _headers: &SignedRequestHeaders,
             _body: &[u8],
-        ) -> Result<(), PullError> {
+        ) -> Result<Option<Uuid>, PullError> {
             self.heartbeats.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            Ok(None)
         }
     }
 
@@ -691,6 +727,26 @@ mod tests {
 
         state.end_command();
         assert!(!state.health_snapshot().healthy);
+    }
+
+    #[test]
+    fn apply_cancel_command_id_only_matches_current() {
+        let state = AgentSessionState::new(AgentKeypair::generate(), &[]);
+        let command_id = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        state.begin_command(command_id);
+
+        state.apply_cancel_command_id(Some(other));
+        assert!(!state.is_cancel_requested());
+        assert!(!state.cancel_flag().load(Ordering::SeqCst));
+
+        state.apply_cancel_command_id(Some(command_id));
+        assert!(state.is_cancel_requested());
+        assert!(state.cancel_flag().load(Ordering::SeqCst));
+
+        state.end_command();
+        assert!(!state.is_cancel_requested());
+        assert!(!state.cancel_flag().load(Ordering::SeqCst));
     }
 
     #[test]

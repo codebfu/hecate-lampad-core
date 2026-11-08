@@ -396,7 +396,7 @@ impl PullClient for HttpPullClient {
         &self,
         headers: &SignedRequestHeaders,
         body: &[u8],
-    ) -> Result<(), PullError> {
+    ) -> Result<Option<Uuid>, PullError> {
         let response = headers
             .apply_to_request(
                 self.client
@@ -417,7 +417,17 @@ impl PullClient for HttpPullClient {
             let body = response.text().await.unwrap_or_default();
             return Err(PullError::Request(format!("HTTP {status}: {body}")));
         }
-        Ok(())
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| PullError::Request(error.to_string()))?;
+        // Older servers may return `{ok:true}` without cancel_command_id.
+        let ack: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        let cancel_command_id = ack
+            .get("cancel_command_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok());
+        Ok(cancel_command_id)
     }
 }
 
