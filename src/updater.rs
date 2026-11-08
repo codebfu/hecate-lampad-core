@@ -658,7 +658,7 @@ pub async fn stage_artifact(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        // Exec bit only for raw binaries; packages (.deb/.msi/.pkg) stay non-executable.
+        // Exec bit only for raw binaries; packages (.deb/.rpm/.msi/.pkg) stay non-executable.
         let is_package = staging_path
             .extension()
             .and_then(|ext| ext.to_str())
@@ -678,7 +678,7 @@ pub async fn stage_artifact(
 
 /// Download (or copy), verify, and apply an update.
 ///
-/// On Linux/Windows/macOS this launches the installer package (`.deb` / `.msi` / `.pkg`) in a
+/// On Linux/Windows/macOS this launches the installer package (`.deb`/`.rpm` / `.msi` / `.pkg`) in a
 /// detached process. On macOS it atomically replaces the binary.
 pub async fn perform_self_update(
     params: &SelfUpdateParams,

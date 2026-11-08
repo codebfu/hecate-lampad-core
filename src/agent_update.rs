@@ -559,11 +559,26 @@ async fn fetch_update_offer(
     agent_id: uuid::Uuid,
     keypair: &crate::signing::AgentKeypair,
 ) -> Result<UpdateOfferResponse, AgentUpdateCliError> {
-    let body = hecate_protocol::agent::UpdateOfferRequest {
-        agent_version: AGENT_VERSION.to_string(),
-        desktop_version: installed_desktop_version(),
-        proxmox_version: installed_proxmox_version(),
+    // Build JSON explicitly so older hecate-protocol pins (without
+    // preferred_installer) still compile; the API accepts the extra field.
+    #[cfg(target_os = "linux")]
+    let body = {
+        let mut value = serde_json::json!({
+            "agent_version": AGENT_VERSION,
+            "desktop_version": installed_desktop_version(),
+            "proxmox_version": installed_proxmox_version(),
+        });
+        value["preferred_installer"] = serde_json::Value::String(
+            crate::package_update::preferred_linux_installer().into(),
+        );
+        value
     };
+    #[cfg(not(target_os = "linux"))]
+    let body = serde_json::json!({
+        "agent_version": AGENT_VERSION,
+        "desktop_version": installed_desktop_version(),
+        "proxmox_version": installed_proxmox_version(),
+    });
     let body_bytes =
         serde_json::to_vec(&body).map_err(|error| AgentUpdateCliError::Server(error.to_string()))?;
     let headers = SignedRequestHeaders::new(

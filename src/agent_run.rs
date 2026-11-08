@@ -409,6 +409,7 @@ async fn run_pull_session(
                         AgentTask::NoOp => false,
                     };
                     let keypair = pull_loop.keypair();
+                    let cancel_flag = pull_loop.session_state().cancel_flag();
                     handle_task(
                         task,
                         Arc::clone(&registry),
@@ -417,6 +418,7 @@ async fn run_pull_session(
                         &keypair,
                         &config,
                         &config.server_url,
+                        cancel_flag,
                     )
                     .await;
                     if mark_busy {
@@ -455,6 +457,7 @@ async fn handle_task(
     keypair: &AgentKeypair,
     config: &AgentConfig,
     server_url: &str,
+    cancel_flag: Arc<std::sync::atomic::AtomicBool>,
 ) {
     match task {
         AgentTask::ExecuteCommand {
@@ -504,9 +507,10 @@ async fn handle_task(
                 return;
             }
 
-            let ctx = CommandContext::new(
+            let ctx = CommandContext::with_cancel(
                 agent_id,
                 AgentPolicy::from_execution_policy(&execution_policy, timeout_secs),
+                Some(Arc::clone(&cancel_flag)),
             );
 
             if command_name == "agent.update" || command_name == "helper.install" {
@@ -824,7 +828,10 @@ async fn handle_task(
                 }
             };
             info!(command_id = %command_id, ?result.exit_code, "command completed");
-            if let Err(error) = client.submit_result(agent_id, keypair, &result).await {
+            // Server already marked the row cancelled; a late result would 409.
+            if cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                info!(command_id = %command_id, "skipping result submit after cancel");
+            } else if let Err(error) = client.submit_result(agent_id, keypair, &result).await {
                 warn!(command_id = %command_id, error = %error, "failed to submit command result");
             }
         }

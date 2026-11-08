@@ -1,6 +1,7 @@
 //! Copyright (C) 2026 Gaultier HUBERT
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+use super::process_kill::{configure_command_process_group, kill_child_tree};
 use super::{AgentCommand, CommandContext, CommandError, CommandOutput};
 use crate::elevation;
 use serde::Deserialize;
@@ -96,6 +97,7 @@ impl AgentCommand for ShellRunCommand {
             &params.env,
             timeout,
             ctx.max_output_bytes,
+            ctx,
         )
     }
 }
@@ -107,6 +109,7 @@ fn run_execve(
     env: &HashMap<String, String>,
     timeout: Duration,
     max_output_bytes: u32,
+    ctx: &CommandContext,
 ) -> Result<CommandOutput, CommandError> {
     let program = &argv[0];
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
@@ -117,6 +120,7 @@ fn run_execve(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    configure_command_process_group(&mut cmd);
 
     for (key, value) in env {
         cmd.env(key, value);
@@ -128,13 +132,18 @@ fn run_execve(
 
     let deadline = Instant::now() + timeout;
     let mut timed_out = false;
+    let mut cancelled = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
+                if ctx.is_cancel_requested() {
+                    kill_child_tree(&mut child);
+                    cancelled = true;
+                    break None;
+                }
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    kill_child_tree(&mut child);
                     timed_out = true;
                     break None;
                 }
@@ -148,6 +157,20 @@ fn run_execve(
 
     let (stdout, stdout_trunc) = read_limited_stdout(&mut child, max_output_bytes)?;
     let (stderr, stderr_trunc) = read_limited_stderr(&mut child, max_output_bytes)?;
+
+    if cancelled {
+        return Ok(CommandOutput {
+            stdout,
+            stderr: if stderr.is_empty() {
+                "command cancelled".into()
+            } else {
+                format!("{stderr}\ncommand cancelled")
+            },
+            // 130 ≈ interrupted by signal (shell convention for SIGINT).
+            exit_code: Some(130),
+            truncated: stdout_trunc || stderr_trunc,
+        });
+    }
 
     let exit_code = if timed_out {
         Some(124)
@@ -347,6 +370,52 @@ mod tests {
         let (out, truncated) = truncate_string("hello-world".into(), 5);
         assert!(out.len() <= 5);
         assert!(truncated);
+    }
+
+    #[test]
+    fn cancel_flag_kills_long_running_process() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        let sleeper: Vec<String> = if cfg!(windows) {
+            vec![
+                "powershell".into(),
+                "-NoProfile".into(),
+                "-Command".into(),
+                "Start-Sleep -Seconds 30".into(),
+            ]
+        } else {
+            vec!["/bin/sleep".into(), "30".into()]
+        };
+        if !cfg!(windows) && !std::path::Path::new("/bin/sleep").exists() {
+            return;
+        }
+
+        let policy = AgentPolicy::new(
+            vec!["shell.run".into()],
+            ShellPolicy {
+                allowed_binaries: vec!["*".into()],
+                allowed_cwd: vec![".".into()],
+                allowed_env: vec![],
+            },
+        );
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let ctx = CommandContext::with_cancel(Uuid::new_v4(), policy, Some(Arc::clone(&cancel_flag)));
+        let cmd = ShellRunCommand;
+        let params = json!({
+            "argv": sleeper,
+            "cwd": ".",
+            "timeout_secs": 60
+        });
+
+        let handle = thread::spawn(move || cmd.execute(&ctx, params));
+        thread::sleep(Duration::from_millis(200));
+        cancel_flag.store(true, Ordering::SeqCst);
+        let out = handle.join().expect("join").expect("execute");
+        assert_eq!(out.exit_code, Some(130));
+        assert!(out.stderr.contains("command cancelled"));
     }
 }
 
